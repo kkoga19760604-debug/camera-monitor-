@@ -1,10 +1,11 @@
 name: Camera Price Monitor
 
 on:
+  push:
+    branches: [ main ]
   schedule:
-    # 30分ごとに自動実行 (UTC時間)
     - cron: '*/30 * * * *'
-  workflow_dispatch: # GitHubの画面から手動実行も可能にする
+  workflow_dispatch:
 
 jobs:
   monitor:
@@ -29,12 +30,3 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: node monitor.js
-
-      - name: 通知履歴 (notified.json) の保存
-        if: always()
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add notified.json || true
-          git commit -m "Update notified history" || true
-          git push || true
