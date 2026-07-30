@@ -27,8 +27,8 @@ if (fs.existsSync(TARGETS_FILE)) {
     targets = JSON.parse(fs.readFileSync(TARGETS_FILE, 'utf-8'));
   } catch (e) {
     targets = [
-      { "jan": "4548736122604", "model": "ILCE-1", "name": "SONY α1 ボディ (ILCE-1)" },
-      { "jan": "4548736130678", "model": "ILCE-7M4", "name": "SONY α7 IV ボディ (ILCE-7M4)" }
+      { "jan": "4548736122604", "mapItemId": "4548736122604", "model": "ILCE-1", "name": "SONY α1 ボディ (ILCE-1)" },
+      { "jan": "4548736130678", "mapItemId": "4548736130678", "model": "ILCE-7M4", "name": "SONY α7 IV ボディ (ILCE-7M4)" }
     ];
     fs.writeFileSync(TARGETS_FILE, JSON.stringify(targets, null, 2), 'utf-8');
   }
@@ -40,6 +40,7 @@ async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// 買取一丁目価格取得 (型番またはJAN)
 async function fetchKaitoriPrice(keyword) {
   const url = `https://www.1-chome.com/api/index/findByKeyword?page=1&size=24&keyword=${encodeURIComponent(keyword)}`;
   try {
@@ -67,50 +68,83 @@ async function fetchKaitoriPrice(keyword) {
   return null;
 }
 
-async function fetchMapCameraPrice(page, keyword) {
-  const url = `https://www.mapcamera.com/search?keyword=${encodeURIComponent(keyword)}`;
+// マップカメラ価格取得 (商品ID / JAN / 型番に対応)
+async function fetchMapCameraPrice(page, target) {
+  const itemId = target.mapItemId || target.jan;
+  const keyword = target.model || target.jan;
+
+  // 1. 直リンクアイテムページ (マップカメラ商品ID/JAN) の巡回を優先試行
+  const itemUrl = `https://www.mapcamera.com/item/${itemId}`;
   try {
-    console.log(`[巡回] マップカメラにアクセス中 (キーワード: ${keyword}): ${url}`);
-    const response = await page.goto(url, { waitUntil: 'load', timeout: 30000 });
-    if (response.status() === 403) {
-      console.log(`[警告] マップカメラからアクセス拒否(403)されました。WAFブロックの可能性があります。`);
-      return null;
+    console.log(`[巡回] マップカメラ商品ページにアクセス中 (ID/JAN: ${itemId}): ${itemUrl}`);
+    const response = await page.goto(itemUrl, { waitUntil: 'load', timeout: 30000 });
+    if (response.status() === 200) {
+      await page.waitForTimeout(2000);
+      const price = await page.evaluate(() => {
+        const selectors = ['.selling-price', '.price_shohin', '.goods-price', '.est-map-price', '.price_new'];
+        for (const selector of selectors) {
+          const el = document.querySelector(selector);
+          if (el) {
+            const txt = el.innerText.replace(/[^0-9]/g, '');
+            if (txt) return parseInt(txt, 10);
+          }
+        }
+        const bodyText = document.body.innerText;
+        if (bodyText.includes('新品')) {
+          const matches = bodyText.match(/¥\s?[0-9,]+/g) || bodyText.match(/￥\s?[0-9,]+/g);
+          if (matches && matches.length > 0) {
+            return parseInt(matches[0].replace(/[^0-9]/g, ''), 10);
+          }
+        }
+        return null;
+      });
+      if (price) return price;
     }
-    await page.waitForTimeout(3000);
-    const price = await page.evaluate(() => {
-      const selectors = ['.selling-price', '.price_shohin', '.goods-price', '.est-map-price', '.price_new'];
-      for (const selector of selectors) {
-        const el = document.querySelector(selector);
-        if (el) {
-          const txt = el.innerText.replace(/[^0-9]/g, '');
-          if (txt) return parseInt(txt, 10);
+  } catch (e) {
+    console.log(`[情報] 商品ページ直アクセス代替処理に移行します (${keyword})`);
+  }
+
+  // 2. 代替: 型番・キーワードでの検索巡回
+  const searchUrl = `https://www.mapcamera.com/search?keyword=${encodeURIComponent(keyword)}`;
+  try {
+    console.log(`[巡回] マップカメラ検索ページにアクセス中 (キーワード: ${keyword}): ${searchUrl}`);
+    const response = await page.goto(searchUrl, { waitUntil: 'load', timeout: 30000 });
+    if (response.status() === 200) {
+      await page.waitForTimeout(3000);
+      const price = await page.evaluate(() => {
+        const selectors = ['.selling-price', '.price_shohin', '.goods-price', '.est-map-price', '.price_new'];
+        for (const selector of selectors) {
+          const el = document.querySelector(selector);
+          if (el) {
+            const txt = el.innerText.replace(/[^0-9]/g, '');
+            if (txt) return parseInt(txt, 10);
+          }
         }
-      }
-      const bodyText = document.body.innerText;
-      if (bodyText.includes('新品')) {
-        const prices = bodyText.match(/¥\s?[0-9,]+/g) || bodyText.match(/￥\s?[0-9,]+/g);
-        if (prices && prices.length > 0) {
-          const numPrices = prices.map(p => parseInt(p.replace(/[^0-9]/g, ''), 10));
-          return numPrices[0];
+        const bodyText = document.body.innerText;
+        if (bodyText.includes('新品')) {
+          const matches = bodyText.match(/¥\s?[0-9,]+/g) || bodyText.match(/￥\s?[0-9,]+/g);
+          if (matches && matches.length > 0) {
+            return parseInt(matches[0].replace(/[^0-9]/g, ''), 10);
+          }
         }
-      }
-      return null;
-    });
-    return price;
+        return null;
+      });
+      return price;
+    }
   } catch (error) {
-    console.error(`[エラー] マップカメラ価格取得失敗 (キーワード: ${keyword}): ${error.message}`);
+    console.error(`[エラー] マップカメラ価格取得失敗 (${keyword}): ${error.message}`);
   }
   return null;
 }
 
 async function sendDiscordNotification(data) {
   if (!DISCORD_WEBHOOK_URL || DISCORD_WEBHOOK_URL.includes('YOUR_DISCORD_WEBHOOK_URL')) return;
-  const searchKeyword = data.model || data.jan;
+  const searchKeyword = data.mapItemId || data.model || data.jan;
   const payload = {
     embeds: [
       {
         title: '🔥 マップカメラ本店 ＞ 買取一丁目 サヤ取り検知！',
-        description: `**商品名**: ${data.name}\n**JANコード**: \`${data.jan}\``,
+        description: `**商品名**: ${data.name}\n**JANコード**: \`${data.jan}\` / **商品ID**: \`${data.mapItemId || data.jan}\``,
         color: 16729156,
         fields: [
           { name: '📊 マップカメラ本店（販売価格）', value: `\`${data.mapPrice.toLocaleString()} 円\``, inline: true },
@@ -164,8 +198,8 @@ async function main() {
 
     if (notifiedList.includes(target.jan)) continue;
 
+    const mapPrice = await fetchMapCameraPrice(page, target);
     const searchKeyword = target.model || target.jan;
-    const mapPrice = await fetchMapCameraPrice(page, searchKeyword);
     const kaitoriPrice = await fetchKaitoriPrice(searchKeyword);
 
     if (mapPrice && kaitoriPrice) {
@@ -173,7 +207,15 @@ async function main() {
       console.log(`-> 本店価格: ${mapPrice.toLocaleString()}円 | 買取: ${kaitoriPrice.toLocaleString()}円 | 差額: ${profit.toLocaleString()}円`);
 
       if (profit >= MIN_PROFIT) {
-        await sendDiscordNotification({ name: target.name, jan: target.jan, model: target.model, mapPrice: mapPrice, kaitoriPrice: kaitoriPrice, profit: profit });
+        await sendDiscordNotification({
+          name: target.name,
+          jan: target.jan,
+          mapItemId: target.mapItemId,
+          model: target.model,
+          mapPrice: mapPrice,
+          kaitoriPrice: kaitoriPrice,
+          profit: profit
+        });
         notifiedList.push(target.jan);
         fs.writeFileSync(HISTORY_FILE, JSON.stringify(notifiedList, null, 2), 'utf-8');
       }
