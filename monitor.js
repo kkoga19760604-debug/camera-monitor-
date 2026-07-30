@@ -27,8 +27,8 @@ if (fs.existsSync(TARGETS_FILE)) {
     targets = JSON.parse(fs.readFileSync(TARGETS_FILE, 'utf-8'));
   } catch (e) {
     targets = [
-      { "jan": "4548736122604", "name": "SONY α1 ボディ (ILCE-1)" },
-      { "jan": "4548736130678", "name": "SONY α7 IV ボディ (ILCE-7M4)" }
+      { "jan": "4548736122604", "model": "ILCE-1", "name": "SONY α1 ボディ (ILCE-1)" },
+      { "jan": "4548736130678", "model": "ILCE-7M4", "name": "SONY α7 IV ボディ (ILCE-7M4)" }
     ];
     fs.writeFileSync(TARGETS_FILE, JSON.stringify(targets, null, 2), 'utf-8');
   }
@@ -66,10 +66,10 @@ async function fetchKaitoriPrice(jan) {
   return null;
 }
 
-async function fetchMapCameraPrice(page, jan) {
-  const url = `https://www.mapcamera.com/search?keyword=${jan}`;
+async function fetchMapCameraPrice(page, keyword) {
+  const url = `https://www.mapcamera.com/search?keyword=${encodeURIComponent(keyword)}`;
   try {
-    console.log(`[巡回] マップカメラにアクセス中: ${url}`);
+    console.log(`[巡回] マップカメラにアクセス中 (キーワード: ${keyword}): ${url}`);
     const response = await page.goto(url, { waitUntil: 'load', timeout: 30000 });
     if (response.status() === 403) {
       console.log(`[警告] マップカメラからアクセス拒否(403)されました。WAFブロックの可能性があります。`);
@@ -97,13 +97,14 @@ async function fetchMapCameraPrice(page, jan) {
     });
     return price;
   } catch (error) {
-    console.error(`[エラー] マップカメラ価格取得失敗 (JAN: ${jan}): ${error.message}`);
+    console.error(`[エラー] マップカメラ価格取得失敗 (キーワード: ${keyword}): ${error.message}`);
   }
   return null;
 }
 
 async function sendDiscordNotification(data) {
   if (!DISCORD_WEBHOOK_URL || DISCORD_WEBHOOK_URL.includes('YOUR_DISCORD_WEBHOOK_URL')) return;
+  const searchKeyword = data.model || data.jan;
   const payload = {
     embeds: [
       {
@@ -115,7 +116,7 @@ async function sendDiscordNotification(data) {
           { name: '💰 買取一丁目（買取価格）', value: `\`${data.kaitoriPrice.toLocaleString()} 円\``, inline: true },
           { name: '✨ 獲得可能利益', value: `**+${data.profit.toLocaleString()} 円**`, inline: false }
         ],
-        url: `https://www.mapcamera.com/search?keyword=${data.jan}`,
+        url: `https://www.mapcamera.com/search?keyword=${encodeURIComponent(searchKeyword)}`,
         timestamp: new Date().toISOString()
       }
     ]
@@ -162,7 +163,8 @@ async function main() {
 
     if (notifiedList.includes(target.jan)) continue;
 
-    const mapPrice = await fetchMapCameraPrice(page, target.jan);
+    const mapSearchKeyword = target.model || target.jan;
+    const mapPrice = await fetchMapCameraPrice(page, mapSearchKeyword);
     if (!mapPrice) { await sleep(INTERVAL_MS); continue; }
 
     const kaitoriPrice = await fetchKaitoriPrice(target.jan);
@@ -172,7 +174,7 @@ async function main() {
     console.log(`-> 本店価格: ${mapPrice.toLocaleString()}円 | 買取: ${kaitoriPrice.toLocaleString()}円 | 差額: ${profit.toLocaleString()}円`);
 
     if (profit >= MIN_PROFIT) {
-      await sendDiscordNotification({ name: target.name, jan: target.jan, mapPrice: mapPrice, kaitoriPrice: kaitoriPrice, profit: profit });
+      await sendDiscordNotification({ name: target.name, jan: target.jan, model: target.model, mapPrice: mapPrice, kaitoriPrice: kaitoriPrice, profit: profit });
       notifiedList.push(target.jan);
       fs.writeFileSync(HISTORY_FILE, JSON.stringify(notifiedList, null, 2), 'utf-8');
     }
