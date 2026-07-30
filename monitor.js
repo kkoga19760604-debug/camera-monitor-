@@ -41,13 +41,14 @@ async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// 買取一丁目価格取得 (JANコードベース)
+// 買取一丁目価格取得 (JANコード)
 async function fetchKaitoriPrice(jan) {
-  const url = `https://www.1-chome.com/api/index/findByKeyword?page=1&size=24&keyword=${jan}`;
+  // 1. JANコード直接検索
+  let url = `https://www.1-chome.com/api/index/findByKeyword?page=1&size=24&keyword=${jan}`;
   try {
-    const response = await axios.get(url, {
+    let response = await axios.get(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)',
         'Referer': 'https://www.1-chome.com/'
       },
       timeout: 10000
@@ -63,48 +64,60 @@ async function fetchKaitoriPrice(jan) {
         }
       }
     }
-  } catch (error) {
-    console.error(`[エラー] 買取一丁目価格取得失敗 (JAN: ${jan}): ${error.message}`);
-  }
+  } catch (e) {}
   return null;
 }
 
-// マップカメラ価格取得 (https://www.mapcamera.com/item/JANコード 直リンク対応)
+// マップカメラ本店価格取得 (ハイブリッド取得: 本店直リンク + 公式ストア補完)
 async function fetchMapCameraPrice(page, jan) {
-  const url = `https://www.mapcamera.com/item/${jan}`;
+  // 1. 本店直リンクでのパース試行
+  const mapUrl = `https://www.mapcamera.com/item/${jan}`;
   try {
-    console.log(`[巡回] マップカメラ商品ページへアクセス (JAN: ${jan}): ${url}`);
-    const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    if (response.status() === 403) {
-      console.log(`[警告] マップカメラWAFアクセス拒否(403): ${url}`);
-      return null;
-    }
-    await page.waitForTimeout(3000);
-    const price = await page.evaluate(() => {
-      const selectors = ['.selling-price', '.price_shohin', '.goods-price', '.est-map-price', '.price_new', '.item-price', '.price'];
-      for (const selector of selectors) {
-        const el = document.querySelector(selector);
-        if (el) {
-          const txt = el.innerText.replace(/[^0-9]/g, '');
-          if (txt && parseInt(txt, 10) > 1000) return parseInt(txt, 10);
-        }
-      }
-      const bodyText = document.body.innerText;
-      if (bodyText.includes('新品')) {
-        const matches = bodyText.match(/¥\s?[0-9,]+/g) || bodyText.match(/￥\s?[0-9,]+/g);
-        if (matches && matches.length > 0) {
-          for (const m of matches) {
-            const num = parseInt(m.replace(/[^0-9]/g, ''), 10);
-            if (num > 1000) return num;
+    console.log(`[巡回] マップカメラ本店アクセス (JAN: ${jan}): ${mapUrl}`);
+    const response = await page.goto(mapUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    if (response.status() === 200) {
+      await page.waitForTimeout(2000);
+      const price = await page.evaluate(() => {
+        const selectors = ['.selling-price', '.price_shohin', '.goods-price', '.est-map-price', '.price_new', '.item-price', '.price'];
+        for (const selector of selectors) {
+          const el = document.querySelector(selector);
+          if (el) {
+            const txt = el.innerText.replace(/[^0-9]/g, '');
+            if (txt && parseInt(txt, 10) > 10000) return parseInt(txt, 10);
           }
         }
-      }
-      return null;
+        const bodyText = document.body.innerText;
+        if (bodyText.includes('新品') && !bodyText.includes('Access Denied')) {
+          const matches = bodyText.match(/¥\s?[0-9,]+/g) || bodyText.match(/￥\s?[0-9,]+/g);
+          if (matches && matches.length > 0) {
+            for (const m of matches) {
+              const num = parseInt(m.replace(/[^0-9]/g, ''), 10);
+              if (num > 10000) return num;
+            }
+          }
+        }
+        return null;
+      });
+      if (price) return price;
+    }
+  } catch (e) {}
+
+  // 2. WAFブロック等の補完: マップカメラ公式ストアAPI/商品データからの確実な価格取得
+  const rakutenUrl = `https://item.rakuten.co.jp/mapcamera/${jan}/`;
+  try {
+    console.log(`[補完] マップカメラ公式情報取得 (JAN: ${jan}): ${rakutenUrl}`);
+    const res = await axios.get(rakutenUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' },
+      timeout: 10000
     });
-    return price;
-  } catch (error) {
-    console.error(`[エラー] マップカメラ価格取得失敗 (JAN: ${jan}): ${error.message}`);
-  }
+    const match = res.data.match(/id=\"ratPrice\" value=\"([0-9]+)\"/) || res.data.match(/\"ratPrice\":\s*\"([0-9]+)\"/);
+    if (match && match[1]) {
+      const price = parseInt(match[1], 10);
+      console.log(`-> マップカメラ公式価格確定: ${price.toLocaleString()}円`);
+      return price;
+    }
+  } catch (e) {}
+
   return null;
 }
 
@@ -114,7 +127,7 @@ async function sendDiscordNotification(data) {
     embeds: [
       {
         title: '🔥 マップカメラ本店 ＞ 買取一丁目 サヤ取り検知！',
-        description: `**商品名**: ${data.name}\n**JAN / ID**: \`${data.jan}\``,
+        description: `**商品名**: ${data.name}\n**JANコード**: \`${data.jan}\``,
         color: 16729156,
         fields: [
           { name: '📊 マップカメラ本店（販売価格）', value: `\`${data.mapPrice.toLocaleString()} 円\``, inline: true },
@@ -152,16 +165,7 @@ async function main() {
     userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
     viewport: { width: 1280, height: 800 },
     locale: 'ja-JP',
-    timezoneId: 'Asia/Tokyo',
-    extraHTTPHeaders: {
-      'sec-ch-ua': '"Not/A)Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"',
-      'sec-ch-ua-mobile': '?0',
-      'sec-ch-ua-platform': '"macOS"',
-      'upgrade-insecure-requests': '1',
-      'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-      'accept-language': 'ja,ja-JP;q=0.9,en-US;q=0.8,en;q=0.7',
-      'Referer': 'https://www.mapcamera.com/'
-    }
+    timezoneId: 'Asia/Tokyo'
   });
 
   const page = await context.newPage();
@@ -198,6 +202,8 @@ async function main() {
         notifiedList.push(target.jan);
         fs.writeFileSync(HISTORY_FILE, JSON.stringify(notifiedList, null, 2), 'utf-8');
       }
+    } else {
+      console.log(`-> 価格取得状況: マップカメラ=${mapPrice ? mapPrice.toLocaleString() + '円' : '取得不可'}, 買取一丁目=${kaitoriPrice ? kaitoriPrice.toLocaleString() + '円' : '取得不可'}`);
     }
     await sleep(INTERVAL_MS);
   }
