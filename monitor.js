@@ -92,7 +92,7 @@ async function fetchMapCameraPrice(page, jan) {
       }
       const bodyText = document.body.innerText;
       if (bodyText.includes('新品')) {
-        const prices = bodyText.match(/(?:￥|\)\s?[0-9,]+/g);
+        const prices = bodyText.match(/¥\s?[0-9,]+/g) || bodyText.match(/￥\s?[0-9,]+/g);
         if (prices && prices.length > 0) {
           const numPrices = prices.map(p => parseInt(p.replace(/[^0-9]/g, ''), 10));
           return numPrices[0];
