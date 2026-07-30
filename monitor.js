@@ -4,27 +4,16 @@ const fs = require('fs');
 const path = require('path');
 
 // =================【設定情報】=================
-// Discord Webhook URL (環境変数または直書き)
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || 'YOUR_DISCORD_WEBHOOK_URL';
-
-// 最低利益（差額）が何円以上で通知するか (0円以上に変更)
 const MIN_PROFIT = 0;
-
-// 各JANコードへのアクセス間隔（ミリ秒）※短すぎるとブロックされます。12秒推奨
 const INTERVAL_MS = 12000;
 // ==============================================
 
 const TARGETS_FILE = path.join(__dirname, 'targets.json');
 const HISTORY_FILE = path.join(__dirname, 'notified.json');
 
+// テスト通知のために通知履歴をリセット
 let notifiedList = [];
-if (fs.existsSync(HISTORY_FILE)) {
-  try {
-    notifiedList = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf-8'));
-  } catch (e) {
-    notifiedList = [];
-  }
-}
 
 let targets = [];
 if (fs.existsSync(TARGETS_FILE)) {
@@ -35,7 +24,6 @@ if (fs.existsSync(TARGETS_FILE)) {
       { "jan": "4548736122604", "name": "SONY α1 ボディ (ILCE-1)" },
       { "jan": "4548736130678", "name": "SONY α7 IV ボディ (ILCE-7M4)" }
     ];
-    fs.writeFileSync(TARGETS_FILE, JSON.stringify(targets, null, 2), 'utf-8');
   }
 }
 
@@ -108,7 +96,10 @@ async function fetchMapCameraPrice(page, jan) {
 }
 
 async function sendDiscordNotification(data) {
-  if (!DISCORD_WEBHOOK_URL || DISCORD_WEBHOOK_URL.includes('YOUR_DISCORD_WEBHOOK_URL')) return;
+  if (!DISCORD_WEBHOOK_URL || DISCORD_WEBHOOK_URL.includes('YOUR_DISCORD_WEBHOOK_URL')) {
+    console.log('[警告] Webhook URLが設定されていません');
+    return;
+  }
   const payload = {
     embeds: [
       {
@@ -116,9 +107,9 @@ async function sendDiscordNotification(data) {
         description: `**商品名**: ${data.name}\n**JANコード**: \`${data.jan}\``,
         color: 16729156,
         fields: [
-          { name: '📊 マップカメラ本店（販売価格）', value: `\`${data.mapPrice.toLocaleString()} 円\``, inline: true },
-          { name: '💰 買取一丁目（買取価格）', value: `\`${data.kaitoriPrice.toLocaleString()} 円\``, inline: true },
-          { name: '✨ 獲得可能利益', value: `**+${data.profit.toLocaleString()} 円**`, inline: false }
+          { name: '📊 マップカメラ本店（販売価格）', value: `\`${data.mapPrice ? data.mapPrice.toLocaleString() + ' 円' : '要確認'}\``, inline: true },
+          { name: '💰 買取一丁目（買取価格）', value: `\`${data.kaitoriPrice ? data.kaitoriPrice.toLocaleString() + ' 円' : '要確認'}\``, inline: true },
+          { name: '✨ 獲得可能利益', value: `**+${data.profit ? data.profit.toLocaleString() + ' 円' : '計算中'}**`, inline: false }
         ],
         url: `https://www.mapcamera.com/item/${data.jan}`,
         timestamp: new Date().toISOString()
@@ -135,6 +126,15 @@ async function sendDiscordNotification(data) {
 
 async function main() {
   console.log(`価格比較モニターを起動しました。対象商品数: ${targets.length}件 (通知基準: ${MIN_PROFIT}円以上)`);
+
+  // 動作テストとして即時テスト通知を一度送信
+  await sendDiscordNotification({
+    name: '【接続テスト】カメラ監視システム起動テスト',
+    jan: '4548736122604',
+    mapPrice: 750000,
+    kaitoriPrice: 760000,
+    profit: 10000
+  });
 
   const useLocalChrome = fs.existsSync(CHROME_PATH);
   const launchOptions = { headless: true, args: ['--disable-blink-features=AutomationControlled'] };
@@ -165,21 +165,16 @@ async function main() {
     const target = targets[i];
     console.log(`\n[処理中 ${i+1}/${targets.length}] ${target.name}`);
 
-    if (notifiedList.includes(target.jan)) continue;
-
     const mapPrice = await fetchMapCameraPrice(page, target.jan);
-    if (!mapPrice) { await sleep(INTERVAL_MS); continue; }
-
     const kaitoriPrice = await fetchKaitoriPrice(target.jan);
-    if (!kaitoriPrice) { await sleep(INTERVAL_MS); continue; }
 
-    const profit = kaitoriPrice - mapPrice;
-    console.log(`-> 本店価格: ${mapPrice.toLocaleString()}円 | 買取: ${kaitoriPrice.toLocaleString()}円 | 差額: ${profit.toLocaleString()}円`);
+    if (mapPrice && kaitoriPrice) {
+      const profit = kaitoriPrice - mapPrice;
+      console.log(`-> 本店価格: ${mapPrice.toLocaleString()}円 | 買取: ${kaitoriPrice.toLocaleString()}円 | 差額: ${profit.toLocaleString()}円`);
 
-    if (profit >= MIN_PROFIT) {
-      await sendDiscordNotification({ name: target.name, jan: target.jan, mapPrice: mapPrice, kaitoriPrice: kaitoriPrice, profit: profit });
-      notifiedList.push(target.jan);
-      fs.writeFileSync(HISTORY_FILE, JSON.stringify(notifiedList, null, 2), 'utf-8');
+      if (profit >= MIN_PROFIT) {
+        await sendDiscordNotification({ name: target.name, jan: target.jan, mapPrice: mapPrice, kaitoriPrice: kaitoriPrice, profit: profit });
+      }
     }
     await sleep(INTERVAL_MS);
   }
