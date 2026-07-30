@@ -1,0 +1,40 @@
+name: Camera Price Monitor
+
+on:
+  schedule:
+    # 30分ごとに自動実行 (UTC時間)
+    - cron: '*/30 * * * *'
+  workflow_dispatch: # GitHubの画面から手動実行も可能にする
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: リポジトリのチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Node.jsのセットアップ
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 依存パッケージのインストール
+        run: npm install
+
+      - name: Playwright Chromiumのインストール
+        run: npx playwright install --with-deps chromium
+
+      - name: 価格比較スクリプトの実行
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: node monitor.js
+
+      - name: 通知履歴 (notified.json) の保存
+        if: always()
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add notified.json || true
+          git commit -m "Update notified history" || true
+          git push || true
