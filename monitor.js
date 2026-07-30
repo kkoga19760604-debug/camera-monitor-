@@ -40,8 +40,8 @@ async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function fetchKaitoriPrice(jan) {
-  const url = `https://www.1-chome.com/api/index/findByKeyword?page=1&size=24&keyword=${jan}`;
+async function fetchKaitoriPrice(keyword) {
+  const url = `https://www.1-chome.com/api/index/findByKeyword?page=1&size=24&keyword=${encodeURIComponent(keyword)}`;
   try {
     const response = await axios.get(url, {
       headers: {
@@ -51,17 +51,18 @@ async function fetchKaitoriPrice(jan) {
       timeout: 10000
     });
     if (response.data && response.data.code === 200 && response.data.data && response.data.data.content.length > 0) {
-      const product = response.data.data.content[0];
-      if (product.jan === jan && product.goodsKbDetails && product.goodsKbDetails.length > 0) {
-        for (const detail of product.goodsKbDetails) {
-          if (detail.kbDetailName.includes('新品') || detail.kbDetailName.includes('最大')) {
-            return detail.kbDetailPrice || detail.maxPrice;
+      for (const product of response.data.data.content) {
+        if (product.goodsKbDetails && product.goodsKbDetails.length > 0) {
+          for (const detail of product.goodsKbDetails) {
+            if (detail.kbDetailName.includes('新品') || detail.kbDetailName.includes('最大')) {
+              return detail.kbDetailPrice || detail.maxPrice;
+            }
           }
         }
       }
     }
   } catch (error) {
-    console.error(`[エラー] 買取一丁目価格取得失敗 (JAN: ${jan}): ${error.message}`);
+    console.error(`[エラー] 買取一丁目価格取得失敗 (キーワード: ${keyword}): ${error.message}`);
   }
   return null;
 }
@@ -163,20 +164,19 @@ async function main() {
 
     if (notifiedList.includes(target.jan)) continue;
 
-    const mapSearchKeyword = target.model || target.jan;
-    const mapPrice = await fetchMapCameraPrice(page, mapSearchKeyword);
-    if (!mapPrice) { await sleep(INTERVAL_MS); continue; }
+    const searchKeyword = target.model || target.jan;
+    const mapPrice = await fetchMapCameraPrice(page, searchKeyword);
+    const kaitoriPrice = await fetchKaitoriPrice(searchKeyword);
 
-    const kaitoriPrice = await fetchKaitoriPrice(target.jan);
-    if (!kaitoriPrice) { await sleep(INTERVAL_MS); continue; }
+    if (mapPrice && kaitoriPrice) {
+      const profit = kaitoriPrice - mapPrice;
+      console.log(`-> 本店価格: ${mapPrice.toLocaleString()}円 | 買取: ${kaitoriPrice.toLocaleString()}円 | 差額: ${profit.toLocaleString()}円`);
 
-    const profit = kaitoriPrice - mapPrice;
-    console.log(`-> 本店価格: ${mapPrice.toLocaleString()}円 | 買取: ${kaitoriPrice.toLocaleString()}円 | 差額: ${profit.toLocaleString()}円`);
-
-    if (profit >= MIN_PROFIT) {
-      await sendDiscordNotification({ name: target.name, jan: target.jan, model: target.model, mapPrice: mapPrice, kaitoriPrice: kaitoriPrice, profit: profit });
-      notifiedList.push(target.jan);
-      fs.writeFileSync(HISTORY_FILE, JSON.stringify(notifiedList, null, 2), 'utf-8');
+      if (profit >= MIN_PROFIT) {
+        await sendDiscordNotification({ name: target.name, jan: target.jan, model: target.model, mapPrice: mapPrice, kaitoriPrice: kaitoriPrice, profit: profit });
+        notifiedList.push(target.jan);
+        fs.writeFileSync(HISTORY_FILE, JSON.stringify(notifiedList, null, 2), 'utf-8');
+      }
     }
     await sleep(INTERVAL_MS);
   }
